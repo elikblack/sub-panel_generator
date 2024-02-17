@@ -1,0 +1,240 @@
+#target illustrator
+
+function isCircle(pathItem) {
+    return pathItem.closed && pathItem.pathPoints.length == 4 && Math.abs(pathItem.area) > 0;
+}
+
+function exportAsJPEG(doc, filePath, dpi) {
+    var exportOptions = new ExportOptionsJPEG();
+    exportOptions.antiAliasing = true;
+    exportOptions.qualitySetting = 70;
+    exportOptions.horizontalScale = dpi / 72 * 100;
+    exportOptions.verticalScale = dpi / 72 * 100;
+    
+    var file = new File(filePath);
+    doc.exportFile(file, ExportType.JPEG, exportOptions);
+}
+
+function processFile(inputFilePath, outputFolderPath, assetsFolderPath) {
+    var file = new File(inputFilePath);
+    if (!file.exists) {
+        alert("File does not exist: " + inputFilePath);
+        return;
+    }
+    
+	var inputFileName = new File(inputFilePath).name;
+    var outputFileName = outputFolderPath + "/" + inputFileName.replace(/\.ai$/i, ".jpg");
+    var doc = app.open(file);
+    var textureFilePath = assetsFolderPath + "/AZD_texture.jpg"; 
+
+    // Ungroup everything
+    app.executeMenuCommand('selectall');
+    for (var ungroupAttempts = 0; ungroupAttempts < 10; ungroupAttempts++) {
+        app.executeMenuCommand('ungroup');
+    }
+    
+    app.executeMenuCommand('deselectall');
+
+    // Select non-circle paths
+    var paths = doc.pathItems;
+    var nonCircularPaths = [];
+    for (var i = 0; i < paths.length; i++) {
+        if (!isCircle(paths[i])) {
+            nonCircularPaths.push(paths[i]);
+        }
+    }
+
+    // Join all non-circle paths if more than one is found
+    if (nonCircularPaths.length > 1) {
+        for (var i = 0; i < nonCircularPaths.length; i++) {
+            nonCircularPaths[i].selected = true;
+        }
+        app.executeMenuCommand('join');
+//         app.executeMenuCommand('Selection Hat 1'); // Old deselect
+		doc.selection = null; // New deselect...are either of these still necessary?
+    }
+
+    // Now, the shape is either joined or it was a single path to begin with
+    var shape = nonCircularPaths.length > 0 ? nonCircularPaths[0] : null;
+
+    if (!shape) {
+        alert("No non-circle shape found. Please check the source file.");
+        doc.close(SaveOptions.DONOTSAVECHANGES);
+        return;
+    }
+	
+
+	// Import and resize texture
+	var placedItem = doc.placedItems.add();
+	placedItem.file = new File(textureFilePath);
+	
+	// Calculate the scale factors for width and height
+	var scaleFactorWidth = (shape.width / placedItem.width) * 100;
+	var scaleFactorHeight = (shape.height / placedItem.height) * 100;
+	
+	// Determine the larger scale factor to ensure the texture covers the entire shape
+	var scaleFactor = Math.max(scaleFactorWidth, scaleFactorHeight);
+	
+	// Resize the texture proportionally
+	placedItem.resize(scaleFactor, scaleFactor);
+	
+// 	// Center the texture relative to the Shape (v2)
+// 	placedItem.position = [
+//		shape.position[0] + (shape.width - (placedItem.width * scaleFactor / 100)) / 2,
+//		shape.position[1] - (shape.height + (placedItem.height * scaleFactor / 100)) / 2
+//		];
+// 
+//	// Center the texture relative to the Shape (v1)
+//	placedItem.position = [
+//		shape.position[0] + (shape.width - placedItem.width) / 2,
+//		shape.position[1] - (shape.height - placedItem.height) / 2
+//		];
+   
+
+    // Duplicate the Shape and position it below the original shape
+    var duplicateShape = shape.duplicate();
+    duplicateShape.moveToEnd(shape.layer); // Ensures duplicateShape is below the Shape
+    duplicateShape.stroked = true;
+    var grayColor = new GrayColor();
+    grayColor.gray = 60; // 50% Gray
+    duplicateShape.strokeColor = grayColor;
+    duplicateShape.strokeWidth = 4;
+    duplicateShape.filled = false;
+
+	placedItem.zOrder(ZOrderMethod.SENDTOBACK);
+
+    // Re-select the original shape for the clipping mask
+    shape.selected = true;
+    duplicateShape.selected = true;
+    placedItem.selected = true;
+
+    app.executeMenuCommand('makeMask');
+
+    // Style and bring circles to the front
+    app.executeMenuCommand('deselectall'); // Ensure no previous selection interferes
+    for (var i = 0; i < paths.length; i++) {
+        if (isCircle(paths[i])) {
+            paths[i].selected = true;
+            paths[i].filled = true;
+            paths[i].fillColor = new RGBColor(); // White
+            paths[i].fillColor.red = 255;
+            paths[i].fillColor.green = 255;
+            paths[i].fillColor.blue = 255;
+            paths[i].strokeWidth = 0; // This line is optional but included for completeness
+    		paths[i].stroked = false;
+            paths[i].zOrder(ZOrderMethod.BRINGTOFRONT);
+        }
+    }
+    
+    // Define the full path to the caution box file using the assetsFolderPath
+    var cautionBoxFilePath = assetsFolderPath + "/caution_box.ai"; // Corrected file path
+
+    // Check if the caution_box.ai file exists
+    if (!new File(cautionBoxFilePath).exists) {
+        alert("Caution box file does not exist!");
+        return;
+    }
+
+    // Load the caution box file by placing it into the document
+    var placedCautionBox = app.activeDocument.placedItems.add();
+    placedCautionBox.file = new File(cautionBoxFilePath);
+
+    // Immediately remove the placed item, we just need it loaded into the document
+    placedCautionBox.remove();
+
+    // Iterate through each circle and place a caution box over it
+    var pathItems = app.activeDocument.pathItems;
+    for (var i = 0; i < pathItems.length; i++) {
+        var item = pathItems[i];
+        if (isCircle(item)) {
+            // Place a new instance of the caution box for each circle
+            var newCautionBox = app.activeDocument.placedItems.add();
+            newCautionBox.file = new File(cautionBoxFilePath);
+
+            // Calculate the position to center the caution box over the circle
+            var centerX = item.position[0] + (item.width / 2) - (newCautionBox.width / 2);
+            var centerY = item.position[1] - (item.height / 2) + (newCautionBox.height / 2);
+
+            newCautionBox.position = [centerX, centerY];
+            newCautionBox.opacity = 80;
+        }
+    }
+
+    // Export the final product as a JPEG at 100dpi
+    exportAsJPEG(doc, outputFileName, 100);
+
+//     Close the document after exporting without saving changes
+    doc.close(SaveOptions.DONOTSAVECHANGES);
+}
+
+function main() {
+    var scriptFolderPath = new File($.fileName).parent.fsName;
+    var sourceFolderPath = scriptFolderPath + "/source";
+    var outputFolderPath = scriptFolderPath + "/output";
+    var assetsFolderPath = scriptFolderPath + "/assets";
+
+    var outputFolder = new Folder(outputFolderPath);
+    if (!outputFolder.exists) {
+        outputFolder.create();
+    }
+
+
+    // Array of input files in the 'source' directory
+    var inputFileNames = [
+	"PP-S1150.ai"// ,
+// 	"PP-S1200.ai",
+// 	"PP-S1300.ai",
+// 	"PP-S1400.ai",
+// 	"PP-S1430.ai",
+// 	"PP-S1440.ai",
+// 	"PP-S1450.ai",
+// 	"PP-S1460.ai",
+// 	"PP-S1470.ai",
+// 	"PP-S1485.ai",
+// 	"PP-S1490.ai",
+// 	"PP-S1500.ai",
+// 	"PP-S1507.ai",
+// 	"PP-S1510.ai",
+// 	"PP-S1520.ai",
+// 	"PP-S1535.ai",
+// 	"PP-S1550.ai",
+// 	"PP-S1555.ai",
+// 	"PP-S1556.ai",
+// 	"PP-S1557.ai",
+// 	"PP-S1560.ai",
+// 	"PP-S1600.ai",
+// 	"PP-S1605.ai",
+// 	"PP-S1606.ai",
+// 	"PP-S1607.ai",
+// 	"PP-S1610.ai",
+// 	"PP-S1615.ai",
+// 	"PP-S1620.ai",
+// 	"PP-S1626.ai",
+// 	"PP-S1630.ai",
+// 	"PP-S1637.ai",
+// 	"PP-S1640.ai",
+// 	"PP-S1650.ai",
+// 	"PP-S1660.ai",
+// 	"PP-SIM20XX.ai",
+// 	"PP-SIM24XX.ai",
+// 	"PP-SIM29XX.ai",
+// 	"PP-SIM2100.ai",
+// 	"PP-SIM2200.ai",
+// 	"PP-SIM2275.ai",
+// 	"PP-SIM2300.ai",
+// 	"PP-SIM2500.ai",
+// 	"PP-SIM2600.ai",
+// 	"PP-SIM2620.ai",
+// 	"PP-SIM2700.ai",
+// 	"PP-SIM2720.ai",
+// 	"PP-SIM2750.ai",
+// 	"PP-S1120.ai"
+    ];
+
+	for (var i = 0; i < inputFileNames.length; i++) {
+        var inputFilePath = sourceFolderPath + "/" + inputFileNames[i];
+        processFile(inputFilePath, outputFolderPath, assetsFolderPath); // Pass the outputFolderPath to the processFile function
+    }
+}
+
+main();
